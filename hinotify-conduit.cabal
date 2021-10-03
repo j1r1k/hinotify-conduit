@@ -6,7 +6,9 @@ cabal-version: 1.12
 
 name:           hinotify-conduit
 version:        0.1.0.0
+synopsis:       inotify conduit sources
 description:    Please see the README on GitHub at <https://github.com/j1r1k/hinotify-conduit#readme>
+category:       System,Conduit
 homepage:       https://github.com/j1r1k/hinotify-conduit#readme
 bug-reports:    https://github.com/j1r1k/hinotify-conduit/issues
 author:         Jiri Marsicek
