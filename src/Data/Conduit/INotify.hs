@@ -1,8 +1,11 @@
+{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE TupleSections #-}
+
 module Data.Conduit.INotify where
 
 import Conduit (ConduitT, MonadIO, bracketP, lift, liftIO, (.|))
 import qualified Conduit as C (await, awaitForever, mapInput, sourceHandle, yield)
-import Control.Concurrent.STM (TVar, newTVar, newTVarIO, readTVarIO, writeTVar)
+import Control.Concurrent.STM (TVar, modifyTVar, newTVar, newTVarIO, readTVarIO, writeTVar)
 import Control.Concurrent.STM.TMQueue (TMQueue, closeTMQueue, newTMQueue, writeTMQueue)
 import Control.Monad.STM (STM, atomically)
 import Control.Monad.Trans.Resource (MonadResource)
@@ -12,8 +15,13 @@ import qualified Data.ByteString.Lazy.Internal as BS (defaultChunkSize)
 import qualified Data.Conduit.List as C (catMaybes, map, mapMaybe)
 import Data.Conduit.TQueue (sourceTMQueue)
 import Data.Foldable (traverse_)
+import Data.Map (Map)
+import qualified Data.Map as Map (delete, fromList, insert, notMember)
+import System.FilePath ((</>))
 import System.FilePath.ByteString (encodeFilePath)
-import qualified System.INotify as INotify (Event (DeletedSelf, Modified), EventVariety (DeleteSelf, Modify), INotify, WatchDescriptor, addWatch, initINotify, killINotify, removeWatch)
+import System.FilePath.Posix.ByteString (decodeFilePath)
+import System.INotify (filePath)
+import qualified System.INotify as INotify (Event (DeletedSelf, Modified, MovedIn), EventVariety (DeleteSelf, Modify, MoveIn), INotify, WatchDescriptor, addWatch, initINotify, killINotify, removeWatch)
 import qualified System.IO as IO (Handle, IOMode (ReadMode), SeekMode (AbsoluteSeek), hClose, hSeek, hTell, openFile)
 
 -- | Run 'ConduitT' with 'INotify'
@@ -127,7 +135,7 @@ inotifyEventsSourceRotate events fp = do
       event <- C.await
 
       case event of
-        Just e@INotify.DeletedSelf {} -> do
+        Just e@INotify.DeletedSelf -> do
           C.yield e
           liftIO $ atomically $ writeTVar var Nothing -- WatchDescriptor is deleted implicitly
           lift unset
@@ -135,6 +143,44 @@ inotifyEventsSourceRotate events fp = do
         Just other -> do
           C.yield other
           inside (getOrInit, unset)
+        Nothing ->
+          return ()
+
+inotifyEventsSourceRotateMultiple :: MonadResource m => [([INotify.EventVariety], FilePath)] -> STM (ConduitT () (INotify.Event, FilePath) m (), STM ())
+inotifyEventsSourceRotateMultiple eventsToFp = do
+  q <- newTMQueue
+  let c = sourceTMQueue q .| withINotify (\i -> replacableBracketP (initialize i q) cleanup (inside i q))
+  return (c, closeTMQueue q)
+  where
+    initializeSingle :: INotify.INotify -> TMQueue (INotify.Event, FilePath) -> [INotify.EventVariety] -> FilePath -> IO INotify.WatchDescriptor
+    initializeSingle i q events fp = do
+      INotify.addWatch i events (encodeFilePath fp) (atomically . writeTMQueue q . (,fp))
+
+    initialize :: INotify.INotify -> TMQueue (INotify.Event, FilePath) -> IO (TVar (Map FilePath INotify.WatchDescriptor))
+    initialize i q = do
+      ws <- traverse (\(events, fp) -> (fp,) <$> initializeSingle i q events fp) eventsToFp
+      newTVarIO $ Map.fromList ws
+
+    cleanup :: TVar (Map FilePath INotify.WatchDescriptor) -> IO ()
+    cleanup var = readTVarIO var >>= traverse_ INotify.removeWatch
+
+    inside :: MonadIO m => INotify.INotify -> TMQueue (INotify.Event, FilePath) -> (m (TVar (Map FilePath INotify.WatchDescriptor)), m ()) -> ConduitT (INotify.Event, FilePath) (INotify.Event, FilePath) m ()
+    inside i q (getOrInit, unset) = do
+      var <- lift getOrInit
+      ws <- liftIO $ readTVarIO var
+      -- initialize all WatchDescriptors that might be missing
+      liftIO $ traverse_ (\(events, fp) -> if Map.notMember fp ws then initializeSingle i q events fp >>= atomically . modifyTVar var . Map.insert fp else pure ()) eventsToFp
+      event <- C.await
+
+      case event of
+        Just e@(INotify.DeletedSelf, fp) -> do
+          C.yield e
+          liftIO $ atomically $ modifyTVar var (Map.delete fp) -- WatchDescriptor is deleted implicitly
+          lift unset
+          inside i q (getOrInit, unset)
+        Just other -> do
+          C.yield other
+          inside i q (getOrInit, unset)
         Nothing ->
           return ()
 
@@ -146,19 +192,19 @@ data FollowFileEvent = Replaced | Modified deriving (Eq, Show)
 --
 -- Interprets file removal as file rotation and tries to recreate the watch and continue to follow the file from last position (expects just rotation that resembles append to file).
 -- Source emits 'Nothing' when EOF is reached. For version emitting just data see 'sourceFileFollowModifyRotateWithSeek\''
-sourceFileFollowModifyRotateWithSeek :: (MonadResource m, MonadIO m) => FilePath -> STM (ConduitT () (Maybe ByteString) m (), STM ())
-sourceFileFollowModifyRotateWithSeek fp = do
-  (eventsSource, closeWatch) <- inotifyEventsSourceRotate [INotify.Modify] fp
+sourceFileFollowModifyRotateWithSeek :: (MonadResource m, MonadIO m) => FilePath -> FilePath -> STM (ConduitT () (Maybe ByteString) m (), STM ())
+sourceFileFollowModifyRotateWithSeek parent fp = do
+  (eventsSource, closeWatch) <- inotifyEventsSourceRotateMultiple [([INotify.MoveIn], parent), ([INotify.DeleteSelf, INotify.Modify], parent </> fp)]
   positionVar <- newTVar Nothing
   return (eventsSource .| C.mapMaybe handleINotifyEvent .| replacableBracketP (initialize positionVar) cleanup (inside positionVar), closeWatch)
   where
-    handleINotifyEvent INotify.Modified {} = Just Modified
-    handleINotifyEvent INotify.DeletedSelf {} = Just Replaced
+    handleINotifyEvent (INotify.Modified {}, fp') = if fp' == parent </> fp then Just Modified else Nothing
+    handleINotifyEvent (INotify.MovedIn {filePath = fp'}, parent') = if parent == parent' && fp == decodeFilePath fp' then Just Replaced else Nothing
     handleINotifyEvent _ = Nothing
 
     initialize :: TVar (Maybe Integer) -> IO IO.Handle
     initialize positionVar = do
-      newHandle <- liftIO $ IO.openFile fp IO.ReadMode
+      newHandle <- IO.openFile (parent </> fp) IO.ReadMode
       maybePosition <- readTVarIO positionVar
       traverse_ (IO.hSeek newHandle IO.AbsoluteSeek) maybePosition -- seek to original position
       return newHandle
@@ -194,7 +240,7 @@ sourceFileFollowModifyRotateWithSeek fp = do
           inside positionVar (getOrInit, unset)
 
 -- | Version of 'sourceFileFollowModifyRotateWithSeek' not notifying about EOF
-sourceFileFollowModifyRotateWithSeek' :: (MonadResource m, MonadIO m) => FilePath -> STM (ConduitT () ByteString m (), STM ())
-sourceFileFollowModifyRotateWithSeek' fp = do
-  (source, close) <- sourceFileFollowModifyRotateWithSeek fp
+sourceFileFollowModifyRotateWithSeek' :: (MonadResource m, MonadIO m) => FilePath -> FilePath -> STM (ConduitT () ByteString m (), STM ())
+sourceFileFollowModifyRotateWithSeek' parent fp = do
+  (source, close) <- sourceFileFollowModifyRotateWithSeek parent fp
   return (source .| C.catMaybes, close)

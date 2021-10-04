@@ -37,6 +37,8 @@ library
       base >=4.9 && <5
     , bytestring
     , conduit
+    , containers
+    , filepath
     , filepath-bytestring
     , hinotify
     , resourcet
@@ -57,6 +59,8 @@ test-suite hinotify-conduit-test
       base >=4.9 && <5
     , bytestring
     , conduit
+    , containers
+    , filepath
     , filepath-bytestring
     , hinotify
     , hinotify-conduit
