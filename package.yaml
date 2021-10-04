@@ -1,5 +1,5 @@
 name: hinotify-conduit
-version: 0.1.0.0
+version: 0.1.0.1
 github: "j1r1k/hinotify-conduit"
 license: BSD3
 author: "Jiri Marsicek"
@@ -11,8 +11,8 @@ extra-source-files:
   - ChangeLog.md
 
 # Metadata used when publishing your package
-synopsis:            inotify conduit sources
-category:            System,Conduit
+synopsis: inotify conduit sources
+category: System,Conduit
 
 # To avoid duplicated efforts in documentation and dealing with the
 # complications of embedding Haddock markup inside cabal files, it is
@@ -26,13 +26,14 @@ dependencies:
   - filepath-bytestring
   - hinotify
   - resourcet
-  - mtl
   - stm
   - stm-conduit
   - stm-chans
 
 library:
   source-dirs: src
+  ghc-options:
+    - -Wall
 
 tests:
   hinotify-conduit-test:

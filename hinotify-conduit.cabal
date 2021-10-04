@@ -5,7 +5,7 @@ cabal-version: 1.12
 -- see: https://github.com/sol/hpack
 
 name:           hinotify-conduit
-version:        0.1.0.0
+version:        0.1.0.1
 synopsis:       inotify conduit sources
 description:    Please see the README on GitHub at <https://github.com/j1r1k/hinotify-conduit#readme>
 category:       System,Conduit
@@ -32,13 +32,13 @@ library
       Paths_hinotify_conduit
   hs-source-dirs:
       src
+  ghc-options: -Wall
   build-depends:
-      base >=4.7 && <5
+      base >=4.9 && <5
     , bytestring
     , conduit
     , filepath-bytestring
     , hinotify
-    , mtl
     , resourcet
     , stm
     , stm-chans
@@ -54,13 +54,12 @@ test-suite hinotify-conduit-test
       test
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
   build-depends:
-      base >=4.7 && <5
+      base >=4.9 && <5
     , bytestring
     , conduit
     , filepath-bytestring
     , hinotify
     , hinotify-conduit
-    , mtl
     , resourcet
     , stm
     , stm-chans

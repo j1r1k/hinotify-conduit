@@ -4,12 +4,10 @@ import Conduit (ConduitT, MonadIO, bracketP, lift, liftIO, (.|))
 import qualified Conduit as C (await, awaitForever, mapInput, sourceHandle, yield)
 import Control.Concurrent.STM (TVar, newTVar, newTVarIO, readTVarIO, writeTVar)
 import Control.Concurrent.STM.TMQueue (TMQueue, closeTMQueue, newTMQueue, writeTMQueue)
-import Control.Exception (tryJust)
-import Control.Monad.Except (guard)
 import Control.Monad.STM (STM, atomically)
 import Control.Monad.Trans.Resource (MonadResource)
 import Data.ByteString (ByteString)
-import qualified Data.ByteString as BS (hGetSome)
+import qualified Data.ByteString as BS (hGetSome, null)
 import qualified Data.ByteString.Lazy.Internal as BS (defaultChunkSize)
 import qualified Data.Conduit.List as C (catMaybes, map, mapMaybe)
 import Data.Conduit.TQueue (sourceTMQueue)
@@ -17,7 +15,6 @@ import Data.Foldable (traverse_)
 import System.FilePath.ByteString (encodeFilePath)
 import qualified System.INotify as INotify (Event (DeletedSelf, Modified), EventVariety (DeleteSelf, Modify), INotify, WatchDescriptor, addWatch, initINotify, killINotify, removeWatch)
 import qualified System.IO as IO (Handle, IOMode (ReadMode), SeekMode (AbsoluteSeek), hClose, hSeek, hTell, openFile)
-import qualified System.IO.Error as IO (isEOFError)
 
 -- | Run 'ConduitT' with 'INotify'
 withINotify :: MonadResource m => (INotify.INotify -> ConduitT a b m r) -> ConduitT a b m r
@@ -172,13 +169,10 @@ sourceFileFollowModifyRotateWithSeek fp = do
     inside :: MonadIO m => TVar (Maybe Integer) -> (m IO.Handle, m ()) -> ConduitT FollowFileEvent (Maybe ByteString) m ()
     inside positionVar (getOrInit, unset) = do
       handle <- lift getOrInit
-      line <- liftIO $ tryJust (guard . IO.isEOFError) $ BS.hGetSome handle BS.defaultChunkSize
+      line <- liftIO $ BS.hGetSome handle BS.defaultChunkSize
 
-      case line of
-        Right l -> do
-          C.yield $ Just l
-          inside positionVar (getOrInit, unset)
-        Left _ -> do
+      if BS.null line
+        then do
           -- eof reached
           C.yield Nothing
           event <- C.await
@@ -195,6 +189,9 @@ sourceFileFollowModifyRotateWithSeek fp = do
             Nothing ->
               -- read the file until EOF after the watch is terminated
               C.mapInput (const ()) (const event) (sourceHandleEof handle)
+        else do
+          C.yield $ Just line
+          inside positionVar (getOrInit, unset)
 
 -- | Version of 'sourceFileFollowModifyRotateWithSeek' not notifying about EOF
 sourceFileFollowModifyRotateWithSeek' :: (MonadResource m, MonadIO m) => FilePath -> STM (ConduitT () ByteString m (), STM ())
