@@ -24,6 +24,7 @@ dependencies:
   - bytestring
   - conduit
   - containers
+  - directory
   - filepath
   - filepath-bytestring
   - hinotify
@@ -45,5 +46,10 @@ tests:
       - -threaded
       - -rtsopts
       - -with-rtsopts=-N
+      - -Wall
     dependencies:
       - hinotify-conduit
+      - async
+      - hspec
+      - temporary
+      - unix
